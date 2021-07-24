@@ -17,9 +17,19 @@
 package org.tensorflow.lite.examples.detection;
 
 import android.app.AlertDialog;
+import android.bluetooth.BluetoothAdapter;
+import android.bluetooth.BluetoothManager;
+import android.bluetooth.le.BluetoothLeScanner;
+import android.bluetooth.le.ScanCallback;
+import android.bluetooth.le.ScanFilter;
+import android.bluetooth.le.ScanResult;
+import android.bluetooth.le.ScanSettings;
+import android.content.Context;
 import android.content.DialogInterface;
+import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.Bitmap.Config;
+import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Matrix;
@@ -29,8 +39,12 @@ import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.hardware.camera2.CameraCharacteristics;
 import android.media.ImageReader.OnImageAvailableListener;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.ParcelUuid;
+import android.os.Parcelable;
 import android.os.SystemClock;
+import android.util.Log;
 import android.util.Size;
 import android.util.TypedValue;
 import android.view.LayoutInflater;
@@ -40,6 +54,8 @@ import android.widget.ImageView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.annotation.RequiresApi;
+
 import com.google.android.gms.tasks.OnSuccessListener;
 import com.google.android.material.floatingactionbutton.FloatingActionButton;
 import com.google.mlkit.vision.common.InputImage;
@@ -48,9 +64,26 @@ import com.google.mlkit.vision.face.FaceDetection;
 import com.google.mlkit.vision.face.FaceDetector;
 import com.google.mlkit.vision.face.FaceDetectorOptions;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.ObjectInput;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
+import java.nio.ByteBuffer;
+import java.util.AbstractMap;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Map;
+
+import org.tensorflow.lite.examples.detection.ble5performacetest.Assembler;
+import org.tensorflow.lite.examples.detection.ble5performacetest.BeaconBroadcast;
+import org.tensorflow.lite.examples.detection.ble5performacetest.Fragmenter;
 import org.tensorflow.lite.examples.detection.customview.OverlayView;
 import org.tensorflow.lite.examples.detection.customview.OverlayView.DrawCallback;
 import org.tensorflow.lite.examples.detection.env.BorderedText;
@@ -94,6 +127,7 @@ public class DetectorActivity extends CameraActivity implements OnImageAvailable
 
   private static final boolean SAVE_PREVIEW_BITMAP = false;
   private static final float TEXT_SIZE_DIP = 10;
+  private static int OUTPUT_SIZE = 10000;
   OverlayView trackingOverlay;
   private Integer sensorOrientation;
 
@@ -130,10 +164,23 @@ public class DetectorActivity extends CameraActivity implements OnImageAvailable
 
   //private HashMap<String, Classifier.Recognition> knownFaces = new HashMap<>();
 
+  private BluetoothManager manager;
+  private BluetoothAdapter btAdapter;
+  private BluetoothLeScanner bluetoothLeScanner;
+  private ScanSettings settings;
+  private List<ScanFilter> filters;
+  private static final int REQUEST_ENABLE_BLUETOOTH = 1;
+  private static final ParcelUuid SERVICE_UUID =
+          ParcelUuid.fromString("0000FEAA-0000-1000-8000-00805F9B34FB");
+  private ArrayList<String> names = new ArrayList<String>();
+  private static final int SEPARATOR_CHAR = 42;
+  private HashMap<String,String> currentRec = new HashMap<String,String>();
 
+  @RequiresApi(api = Build.VERSION_CODES.O)
   @Override
   protected void onCreate(Bundle savedInstanceState) {
     super.onCreate(savedInstanceState);
+    initializeBt();
 
     fabAdd = findViewById(R.id.fab_add);
     fabAdd.setOnClickListener(new View.OnClickListener() {
@@ -157,6 +204,8 @@ public class DetectorActivity extends CameraActivity implements OnImageAvailable
     faceDetector = detector;
 
 
+    Log.v("here", "here5");
+    scanLeDevice(true);
     //checkWritePermission();
 
   }
@@ -382,6 +431,277 @@ public class DetectorActivity extends CameraActivity implements OnImageAvailable
 
   }
 
+  public void scanLeDevice(final boolean enable) {
+    if (enable) {
+      bluetoothLeScanner.startScan(filters, settings, leScanCallback);
+    } else {
+      bluetoothLeScanner.stopScan(leScanCallback);
+    }
+  }
+
+  private ScanCallback leScanCallback = new ScanCallback() {
+    @Override
+    public void onScanResult(int callbackType, ScanResult result) {
+      Log.v("here", "here6");
+      Context context = getApplicationContext();
+      CharSequence text = "BLE Receiving: LE ScanCallBack!";
+      int duration = Toast.LENGTH_SHORT;
+
+      Toast toast = Toast.makeText(context, text, duration);
+      toast.show();
+
+      Log.i("callbackType", String.valueOf(callbackType));
+      //Log.i("result", result.getDataStatus()+"");
+
+//            if (result.getDataStatus() == 0) {
+//                complete++;
+//            } if (result.getDataStatus() == 2) {
+//                truncated++;
+//            }
+//            Log.i("collision rate: ", truncated/((complete+truncated)*1.00)+"");
+
+      Log.v("here", "here22 " + result.getScanRecord().getDeviceName());
+      Log.v("here", "here23 "+result.getScanRecord().getBytes().length);
+      String address = result.getDevice().getName();
+      //byte[] pData = Assembler.gather(address, result.getScanRecord().getServiceData(SERVICE_UUID));
+      byte [] pData = Assembler.gather(address, result.getScanRecord().getBytes());
+      //Log.v("here", "here21 "+ pData.length);
+      if (pData != null) {
+        Log.v("here", "here2");
+        update(pData);
+        Log.v("here", "here3");
+      }
+    }
+
+    @Override
+    public void onBatchScanResults(List<ScanResult> results) {
+      for (ScanResult sr : results) {
+        Log.i("ScanResult - Results", sr.toString());
+      }
+    }
+
+    @Override
+    public void onScanFailed(int errorCode) {
+      Log.e("Scan Failed", "Error Code: " + errorCode);
+    }
+  };
+
+  private void update(byte[] data){
+    Log.v("DetectorActivity 488", "Debug Okay1" + data);
+    int index = 0;
+    int nextStart = 0;
+    while (data[index] != (byte)SEPARATOR_CHAR){
+      Log.v("DetectorActivity 488", "Debug Okay4");
+      index++;
+    }
+    Log.v("DetectorActivity 488", "Debug Okay2");
+    byte[] nameByte = Arrays.copyOfRange(data, nextStart, index);
+    nextStart = index;
+    Log.v("DetectorActivity 488", "Debug Okay3");
+    while (data[index] != (byte)SEPARATOR_CHAR){
+      Log.v("DetectorActivity 488", "Debug Okay4");
+      index++;
+    }
+    byte[] idByte = Arrays.copyOfRange(data, nextStart, index);
+    nextStart = index;
+    while (data[index] != (byte)SEPARATOR_CHAR){
+      Log.v("DetectorActivity 488", "Debug Okay4");
+      index++;
+    }
+    byte[] titleByte = Arrays.copyOfRange(data, nextStart, index);
+    nextStart = index;
+    while (data[index] != (byte)SEPARATOR_CHAR){
+      Log.v("DetectorActivity 488", "Debug Okay4");
+      index++;
+    }
+    byte[] distByte = Arrays.copyOfRange(data, nextStart, index);
+    nextStart = index;
+    while (data[index] != (byte)SEPARATOR_CHAR){
+      Log.v("DetectorActivity 488", "Debug Okay4");
+      index++;
+    }
+    byte[] locLByte = Arrays.copyOfRange(data, nextStart, index);
+    nextStart = index;
+    while (data[index] != (byte)SEPARATOR_CHAR){
+      Log.v("DetectorActivity 488", "Debug Okay4");
+      index++;
+    }
+    byte[] locTByte = Arrays.copyOfRange(data, nextStart, index);
+    nextStart = index;
+    while (data[index] != (byte)SEPARATOR_CHAR){
+      Log.v("DetectorActivity 488", "Debug Okay4");
+      index++;
+    }
+    byte[] locRByte = Arrays.copyOfRange(data, nextStart, index);
+    nextStart = index;
+    while (data[index] != (byte)SEPARATOR_CHAR){
+      Log.v("DetectorActivity 488", "Debug Okay4");
+      index++;
+    }
+    byte[] locBByte = Arrays.copyOfRange(data, nextStart, index);
+    byte[] cropByte = Arrays.copyOfRange(data, index, data.length);
+
+    Log.v("DetectorActivity 488", "Debug Exception14");
+
+    String name = "";
+    String id = "";
+    String title = "";
+    Float dist = 0.0f;
+    Float locL = 0.0f;
+    Float locT = 0.0f;
+    Float locR = 0.0f;
+    Float locB = 0.0f;
+    RectF loc;
+    Bitmap crop;
+//    byte[] name = Arrays.copyOfRange(data,0,index);
+//    index++;
+//    int recStart = index;
+//    while (data[index] != (byte)SEPARATOR_CHAR){
+//      index++;
+//    }
+//    byte[] recData = Arrays.copyOfRange(data,recStart,index);
+//    index++;
+//    byte[] pantsData = Arrays.copyOfRange(data,index,data.length);
+//    String nameStr = new String(name);
+//    String recStr = new String(recData);
+//    String pantsStr = new String(pantsData);
+
+//    SimilarityClassifier.Recognition receivedRec = null;
+//    ByteArrayInputStream bis = new ByteArrayInputStream(recData);
+//    ObjectInput in = null;
+
+    //Map.Entry<String, String> map = null;
+    try {
+//      ByteArrayOutputStream out = new ByteArrayOutputStream();
+//      ObjectOutputStream objectOutputStream= new ObjectOutputStream(out);
+//      objectOutputStream.write(recData);
+//      objectOutputStream.flush();
+//
+//      ObjectInput input = new ObjectInputStream(new ByteArrayInputStream(out.toByteArray()));
+//    System.out.println("input.available(): " + input.available());
+//    System.out.println("input.readByte(): " + input.readByte());
+
+//      map = (Map.Entry<String, String>) input.readObject();
+//      String rec = map.getValue();
+//      String[] values = rec.split("#");
+//      float f = 0;
+//      if (!values[2].equals("")) {
+//        f = Float.parseFloat(values[2]);
+//      }
+//      String[] rectFString = values[3].split("\\(");
+//      rectFString = rectFString[1].split("\\)");
+//      rectFString = rectFString[0].split(",");
+//      float one = Float.parseFloat(rectFString[0]);
+//      float two = Float.parseFloat(rectFString[1]);
+//      float three = Float.parseFloat(rectFString[2]);
+//      float four = Float.parseFloat(rectFString[3]);
+//      RectF rectF = new RectF(one, two, three, four);
+//      SimilarityClassifier.Recognition recognition = new SimilarityClassifier.Recognition(values[0], values[1], f, rectF);
+//      recognition.setExtra(getFloatArrayObject(values[4]));
+//      //registered.put(map.getKey(), recognition);
+//      detector.register(map.getKey(), recognition);
+      name = new String (nameByte);
+      id = new String (idByte);
+      title = new String (titleByte);
+
+      Log.v("DetectorActivity 488", "Debug Exception13");
+
+      dist = ByteBuffer.wrap(distByte).getFloat();
+
+      Log.v("DetectorActivity 488", "Debug Exception12");
+
+      locL = ByteBuffer.wrap(locLByte).getFloat();
+      locT = ByteBuffer.wrap(locTByte).getFloat();
+      locR = ByteBuffer.wrap(locRByte).getFloat();
+      locB = ByteBuffer.wrap(locBByte).getFloat();
+
+      loc = new RectF(locL, locT, locR, locB);
+
+      Log.v("DetectorActivity 488", "Debug Exception11");
+
+      BitmapFactory.Options options = new BitmapFactory.Options();
+      options.inMutable = true;
+      crop = BitmapFactory.decodeByteArray(cropByte, 0, cropByte.length, options);
+      Canvas canvas = new Canvas(crop);
+
+      Log.v("DetectorActivity 488", "Debug Exception10");
+
+      SimilarityClassifier.Recognition receivedRec = new SimilarityClassifier.Recognition(id, title, dist, loc);
+      receivedRec.setCrop(crop);
+
+      detector.register(name, receivedRec);
+
+      Log.v("here11", name);
+      Log.v("DetectorActivity 488", "Debug Okay");
+    } catch (Exception ex){
+      Log.v("DetectorActivity 488", "Debug Exception");
+    }
+
+//    finally {
+//      try {
+//        if (in != null) {
+//          in.close();
+//        }
+//      } catch (IOException ex) {
+//        // ignore close exception
+//      }
+//    }
+
+    Context context = getApplicationContext();
+    CharSequence text = "BLE Receiving: "+name;
+    int duration = Toast.LENGTH_SHORT;
+
+    Toast toast = Toast.makeText(context, text, duration);
+    toast.show();
+
+    // yunqi
+  }
+
+  static Object getFloatArrayObject(String arrayString) {
+    String[] floatArray = arrayString.split("\\[\\[")[1].split("]]");
+    floatArray = floatArray[0].split(",");
+    float[][] finalArr = new float[1][OUTPUT_SIZE];
+    for (int i = 0, floatArrayLength = floatArray.length; i < floatArrayLength; i++) {
+      String f = floatArray[i];
+      float f1 = Float.parseFloat(f);
+      finalArr[0][i] = f1;
+    }
+    return finalArr;
+  }
+
+  private void initializeBt(){
+    manager = (BluetoothManager) getApplicationContext().getSystemService(
+            Context.BLUETOOTH_SERVICE);
+    btAdapter = manager.getAdapter();
+    if (btAdapter == null) {
+      Log.e("Bluetooth Error", "Bluetooth not detected on device");
+    } else if (!btAdapter.isEnabled()) {
+      Log.e("Error","Need to request Bluetooth");
+      Intent enableBtIntent = new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE);
+      this.startActivityForResult(enableBtIntent, REQUEST_ENABLE_BLUETOOTH);
+    } else if (!btAdapter.isMultipleAdvertisementSupported()) {
+      Log.e("Not supported", "BLE advertising not supported on this device");
+    }
+    bluetoothLeScanner = btAdapter.getBluetoothLeScanner();
+    settings = new ScanSettings.Builder()
+            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .setLegacy(false)
+            .setPhy(ScanSettings.PHY_LE_ALL_SUPPORTED)
+            .setNumOfMatches(ScanSettings.MATCH_NUM_MAX_ADVERTISEMENT)
+            .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
+            .setMatchMode(ScanSettings.MATCH_MODE_AGGRESSIVE)
+            .build();
+    filters = new ArrayList<ScanFilter>();
+    byte[] test = new byte[200];
+    byte[] mask = new byte [200];
+    for (int i = 0; i < 200; i++){
+      test[i] = (byte)1;
+      mask[i] = (byte)0;
+    }
+    //filters.add(new ScanFilter.Builder().setServiceData(SERVICE_UUID,test,mask).build());
+    filters.add(new ScanFilter.Builder().setServiceUuid(SERVICE_UUID).build());
+  }
+
   private void showAddFaceDialog(SimilarityClassifier.Recognition rec) {
 
     AlertDialog.Builder builder = new AlertDialog.Builder(this);
@@ -404,6 +724,70 @@ public class DetectorActivity extends CameraActivity implements OnImageAvailable
               return;
           }
           detector.register(name, rec);
+
+          Intent intent = new Intent(DetectorActivity.this, BeaconBroadcast.class);
+          //intent.putExtra("name", name);
+//          BeaconBroadcast bb = new BeaconBroadcast();
+//          Fragmenter.advertise(bb.adv,245,name.getBytes(),SERVICE_UUID,bb.parameters.build(),bb.callback);
+          ByteArrayOutputStream bos = new ByteArrayOutputStream();
+          ObjectOutputStream out = null;
+          try {
+            Log.v("DetectorActivity 588 Debug", "Debug");
+            out = new ObjectOutputStream(bos);
+            Log.v("DetectorActivity 590 Debug", "Debug");
+            //Map.Entry<String, String> faceData = new AbstractMap.SimpleEntry(name, rec.toString());
+            Log.v("here9", name.toString());
+            Log.v("here10", rec.toString());
+            //SimilarityClassifier.Recognition recs = new SimilarityClassifier.Recognition(rec.getId(),rec.getTitle(),rec.getDistance(), rec.getLocation());
+            out.writeObject(name);
+            Log.v("DetectorActivity 592 Debug", "Debug");
+            out.flush();
+            Log.v("DetectorActivity 594 Debug", "Debug");
+            byte[] recBytes = bos.toByteArray();
+            Log.v("DetectorActivity 596 Debug", "Debug");
+            intent.putExtra("name", name.getBytes());
+            intent.putExtra("id", rec.getId().getBytes());
+            intent.putExtra("title",rec.getTitle().getBytes());
+            intent.putExtra("dist",ByteBuffer.allocate(4).putFloat(rec.getDistance()).array());
+            intent.putExtra("locL",ByteBuffer.allocate(4).putFloat(rec.getLocation().left).array());
+            intent.putExtra("locT",ByteBuffer.allocate(4).putFloat(rec.getLocation().top).array());
+            intent.putExtra("locR",ByteBuffer.allocate(4).putFloat(rec.getLocation().right).array());
+            intent.putExtra("locB",ByteBuffer.allocate(4).putFloat(rec.getLocation().bottom).array());
+
+            ByteArrayOutputStream stream = new ByteArrayOutputStream();
+            rec.getCrop().compress(Bitmap.CompressFormat.PNG, 100, stream);
+            byte[] cropBA = stream.toByteArray();
+            rec.getCrop().recycle();
+
+            intent.putExtra("crop",cropBA);
+            Log.v("here15", recBytes.toString());
+            Log.v("DetectorActivity 598 Debug", "Debug");
+          } catch (Exception ex) {
+            Log.v("DetectorActivity 600 Debug", ex.getLocalizedMessage());
+          } finally {
+            try {
+              bos.close();
+            } catch (IOException ex) {
+              Log.v("here","here16");
+            }
+          }
+          startService(intent);
+
+//          intent.putExtra("recId", rec.getId());
+//          intent.putExtra("recTitle", rec.getTitle());
+//          intent.putExtra("recDistance", rec.getDistance());
+//          intent.putExtra("recLocation", rec.getLocation());
+//          intent.putExtra("recColor", rec.getColor());
+//          intent.putExtra("recExtra", (Bundle) rec.getExtra());
+//          intent.putExtra("recCrop", rec.getCrop());
+
+          Context context = getApplicationContext();
+          CharSequence text = "BLE Broadcast: User Feature!";
+          int duration = Toast.LENGTH_SHORT;
+
+          Toast toast = Toast.makeText(context, text, duration);
+          toast.show();
+
           //knownFaces.put(name, rec);
           dlg.dismiss();
       }
@@ -419,7 +803,6 @@ public class DetectorActivity extends CameraActivity implements OnImageAvailable
     trackingOverlay.postInvalidate();
     computingDetection = false;
     //adding = false;
-
 
     if (mappedRecognitions.size() > 0) {
        LOGGER.i("Adding results");
@@ -527,6 +910,8 @@ public class DetectorActivity extends CameraActivity implements OnImageAvailable
                             (int) faceBB.top,
                             (int) faceBB.width(),
                             (int) faceBB.height());
+          //Yunqi
+          Log.v("DetectorActivity 531", crop.toString());
         }
 
         final long startTime = SystemClock.uptimeMillis();
